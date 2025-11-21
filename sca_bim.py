@@ -31,7 +31,7 @@ def extract_bim_data(ifc_path):
         
         elements = []
         # Focus on Columns and Beams as per the paper
-        target_types = ['IfcColumn', 'IfcBeam'] 
+        target_types = ['IfcColumn', 'IfcBeam', 'IfcWall', 'IfcFooting', 'IfcRoof', 'IfcSlab']  
         
         idx = 0
         for t in target_types:
@@ -51,25 +51,7 @@ def extract_bim_data(ifc_path):
                         continue
         return elements
     except Exception as e:
-        print(f"Error reading IFC (or file not found): {e}")
-        print("Generating DUMMY data for testing instead...")
-        return generate_dummy_data()
-
-def generate_dummy_data():
-    """Generates synthetic columns and beams for testing without an IFC file."""
-    elements = []
-    # 4 Columns at bottom (Z=0 to 3)
-    for i in range(4):
-        elements.append({
-            'id': i, 'type': 'IfcColumn',
-            'bbox': {'min_x': i*5, 'max_x': (i*5)+1, 'min_y': 0, 'max_y': 1, 'min_z': 0, 'max_z': 3}
-        })
-    # 1 Beam on top of columns (Z=3 to 3.5)
-    elements.append({
-        'id': 4, 'type': 'IfcBeam',
-        'bbox': {'min_x': 0, 'max_x': 20, 'min_y': 0, 'max_y': 1, 'min_z': 3, 'max_z': 3.5}
-    })
-    return elements
+        raise RuntimeError(f"Error reading IFC (or file not found): {e}")
 
 # ==========================================
 # 2. MoCC LAYER: Constructability Constraints
@@ -82,8 +64,7 @@ def check_overlap(bbox1, bbox2):
 
 def generate_mocc(elements):
     """
-    Creates the N x N Matrix of Constructability Constraints.
-    Logic: If A is below B and they overlap, A must be built before B.
+    Updated Logic: Handles overlap/penetration between elements (e.g. Wall sinking into Footing).
     """
     n = len(elements)
     mocc = np.zeros((n, n), dtype=int)
@@ -92,15 +73,26 @@ def generate_mocc(elements):
         for j in range(n):
             if i == j: continue
             
-            el_a = elements[i]
-            el_b = elements[j]
+            el_a = elements[i] # Potential Predecessor (e.g. Footing)
+            el_b = elements[j] # Potential Successor (e.g. Wall)
             
-            # Spatial Constraint Logic from Paper:
-            # If Element A is strictly below Element B (Z-axis)
-            if el_a['bbox']['max_z'] <= el_b['bbox']['min_z']:
-                # AND they align vertically (XY overlap)
-                if check_overlap(el_a['bbox'], el_b['bbox']):
-                    mocc[i][j] = 1 # i must precede j (A -> B)
+            # 1. Check XY Overlap (Is A under B?)
+            if check_overlap(el_a['bbox'], el_b['bbox']):
+                
+                # 2. Z-Level Logic (Robust)
+                # Instead of checking if Top A < Bottom B, we check:
+                # Does A start significantly lower than B?
+                
+                z_min_a = el_a['bbox']['min_z']
+                z_min_b = el_b['bbox']['min_z']
+                z_max_a = el_a['bbox']['max_z']
+                
+                # Rule: If A starts below B, and A is mostly below B
+                if z_min_a < z_min_b:
+                    # Determine if there is vertical interaction
+                    # Allow a small overlap (tolerance of 0.5 meters)
+                    if z_max_a >= z_min_b - 0.5:
+                        mocc[i][j] = 1 # i must precede j
                     
     return mocc
 
